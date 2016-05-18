@@ -2,25 +2,64 @@
 
 class Converter {
     const CONTENT_XML_NAME = 'word/document.xml';
+    const RELATIONSHIPS_XML_NAME = 'word/_rels/document.xml.rels';
     
     private $xmlData;
+    private $linkData;
     private $data_addr;
     
     public function __construct($data_addr = "") {
         $this->data_addr = $data_addr;
         $this->xmlData = null;
+        $this->linkData = null;
     }
     
     public function __destruct() {}
     
-    private function _getUrl($id) { return ""; }
+    private function _xmlConvert($uri, $elem) {
+        $xmlIter = null;
+        
+        if (strlen($uri) < 1) return null;
+        
+        $zip = new ZipArchive();
+
+        if ($zip->open($uri) === true) {
+            $content = $zip->getFromName($elem);
+            
+            // Clean XML so that simplexml can convert it
+            $content = preg_replace('$(</?|\s)(w|r)(:)$', '$1', $content);
+            
+            $xmlIter = simplexml_load_string($content, "SimpleXMLIterator");
+            $zip->close();
+            
+        }
+        
+        return $xmlIter;
+    }
     
-    private function _iterateElems($d, $parent = null) {
-        $last_row_parent = 0;
+    private function _getUrl($id) {
+        $d = $this->linkData;
+        
+        if ($d === null) return "";
+        
+        for ($d->rewind(); $d->valid(); $d->next()) {
+            $attr = $d->current()->attributes();
+            $curId = $attr->Id->__toString();
+            
+            if (strcmp($id, $curId) === 0)
+                return $attr->Target->__toString();
+        }
+        
+        return "";
+    }
+    
+    private function _iterateElems($d, $header = false) {
+        $first_row = true;
         $o = "";
         
         for($d->rewind(); $d->valid(); $d->next()) {
             $name = $d->key();
+            $attributes = $d->current()->attributes();
             $addBreak = false;
             $isContent = false;
             $tag = false;
@@ -30,19 +69,35 @@ class Converter {
                     $tag = 'p';
                     break;
                 case "r":
-                    if ($last_row_parent === $parent) {
-                        var_dump($name_before);
+                    if (!$first_row) {
                         $addBreak = true;
                     }
-                    
-                    $last_row_parent = $d;
+                    $first_row = false;
                     break;
                 case "hyperlink":
                     $tag = 'a';
-                    $params = 'href="'. $this->_getUrl($id) .'"';
+                    $params = 'target="_blank" href="'. $this->_getUrl($attributes->id->__toString()) .'"';
                     break;
                 case "t":
+                    if ($header) {
+                        $tag = $header;
+                        $header = false;
+                    }
                     $isContent = true;
+                    break;
+                case "pPr":
+                    $te = $d->current()->children()->pStyle;
+                    $te->rewind();
+                    $type =  $te->current()->attributes()->val->__toString();
+                    
+                    switch( $type ) {
+                        case 'Heading1': $header = 'h1'; break;
+                        case 'Heading2': $header = 'h2'; break;
+                        case 'Heading3': $header = 'h3'; break;
+                        case 'Heading4': $header = 'h4'; break;
+                        default: $header = false;
+                    }
+                    
                     break;
                 default: $tag = null;
             }
@@ -50,11 +105,11 @@ class Converter {
             if ($tag) $o .= "<$tag $params>";
             
             if ($d->hasChildren())
-                $o .= $this->_iterateElems($d->getChildren(), $d);
+                $o .= $this->_iterateElems($d->getChildren(), $header);
             
             if ($isContent) $o .= $d->t->__toString();
-            if ($tag) $o .= "</$tag>";
             if ($addBreak) $o .= '<br/>';
+            if ($tag) $o .= "</$tag>";
         }
         return $o;
     }
@@ -75,49 +130,15 @@ class Converter {
             echo "Error has occured.";
         }
         
-        /*
-        foreach ($textElems->children() as $pElem) {
-            $styleElem = $pElem->pPr->pStyle;
-            $contentElem = $pElem->r->t;
-            $linkElem = $pElem->r->
-            $style = "";
-            $text =  "";
-            
-            if ($styleElem !== null) $style = $styleElem->attributes()->val->__toString();
-            if ($contentElem !== null) $text = $contentElem->__toString();
-            
-            if (strlen($text) > 0) {
-                switch($style) {
-                    case "Heading1": $tag = 'h1'; break;
-                    case "Heading2": $tag = 'h2'; break;
-                    case "Heading3": $tag = 'h3'; break;
-                    case "Heading4": $tag = 'h4'; break;
-                    default: $tag = 'p';
-                }
-                
-                $output .= "<$tag>$text</$tag>";
-            }
-        }
-        */
         return $output;
     }
     
     public function readData() {
-        if (strlen($this->data_addr) < 1) return -1;
+        $this->xmlData = $this->_xmlConvert($this->data_addr, self::CONTENT_XML_NAME);
+        $this->linkData = $this->_xmlConvert($this->data_addr, self::RELATIONSHIPS_XML_NAME);
         
-        $zip = new ZipArchive();
-
-        if ($zip->open($this->data_addr) === true) {
-            $content = $zip->getFromName(self::CONTENT_XML_NAME);
-            
-            // Clean XML so that simplexml can convert it
-            $content = preg_replace('$(</?)(w|r)(:)$', '$1', $content);
-            
-            $this->xmlData = simplexml_load_string($content, "SimpleXMLIterator");
-            $zip->close();
-            return 1;
-            
-        } else throw new Exception('Can not open zip file.');
+        if ($this->xmlData === null || $this->linkData === null) return -1;
+        else return 1;
     }
     
     public function getHtml() {
